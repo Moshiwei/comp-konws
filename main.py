@@ -166,21 +166,33 @@ retriever = vectorstore.as_retriever(search_kwargs={"k": 1})
 # retriever = FAISSRetriever.from_documents(documents, embeddings)
 # retriever.search_kwargs["k"] = 1  # 检索最相关的1个文档
 
+# Step 8: RAG generation function
 def generate_answer_with_rag(question):
-    relevant_docs = retriever.get_relevant_documents(question)
+    # 1. Retrieve relevant documents
+    relevant_docs = retriever.invoke(question)
+
+    # 2. Construct the prompt (including the retrieved document content)
     context = " ".join([doc.page_content for doc in relevant_docs])
-    input_text = f"follow the knowledge below: {context} question: {question} answer: "
-    
+    input_text = f"Answer based on the following knowledge: {context} Question: {question} Answer: "
+
+    # 3. Generate the answer
     inputs = tokenizer(input_text, return_tensors="pt").to("mps")
+    input_ids = inputs["input_ids"]  # Extract input_ids
+    attention_mask = inputs["attention_mask"]
+
+    # 4. Generate the answer using the model
     outputs = model.generate(
-        inputs,
+        input_ids,  # Call the generate method with input_ids
+        attention_mask=attention_mask,
         generation_config=GenerationConfig(
-            temperature=0.2,
+            # do_sample=False,
+            # temperature=0.2,
             max_new_tokens=200,
-            repetition_penalty=1.5
+            repetition_penalty=2.5,
         )
     )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("answer：")[-1].strip()
+    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("Answer: ")[-1].strip()
+    
 
 # 步骤八：模型部署和使用
 
