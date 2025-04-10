@@ -1,12 +1,17 @@
 # import nltk
 # nltk.download('punkt')
 
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, AutoConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, AutoConfig, GenerationConfig
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
 from transformers import pipeline
 import evaluate
 import numpy as np
+
+from langchain_community.document_loaders import JSONLoader
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
 
 # 步骤一：加载模型和分词器
 model_name = "gpt2"
@@ -128,16 +133,70 @@ trainer = Trainer(
 trainer.train()
 
 # 步骤七：保存微调后的模型
+# 保存模型和分词器
 model.save_pretrained("fine_tuned_gpt2")
+tokenizer.save_pretrained("fine_tuned_gpt2")
+
+import json
+documents = []
+with open("langchain-handbook.jsonl", "r", encoding="utf-8") as f:
+    for line in f:
+        try:
+            data = json.loads(line)
+            answer = data.get("answer", "")
+            documents.append(Document(page_content=answer))
+        except json.JSONDecodeError:
+            print(f"Error decoding line: {line}")
+
+# loader = JSONLoader(
+#     file_path="langchain-handbook.jsonl",  # 替换为你的数据路径
+#     jq_schema=".[]",
+#     text_content=False
+# )
+# raw_docs = loader.load()
+
+# documents = []
+# for raw_doc in raw_docs:
+#     answer = raw_doc.metadata.get("answer", "")
+#     documents.append(Document(page_content=answer))  # 构造 LangChain 文档对象
+
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+vectorstore = FAISS.from_documents(documents, embeddings)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 1})
+# retriever = FAISSRetriever.from_documents(documents, embeddings)
+# retriever.search_kwargs["k"] = 1  # 检索最相关的1个文档
+
+def generate_answer_with_rag(question):
+    relevant_docs = retriever.get_relevant_documents(question)
+    context = " ".join([doc.page_content for doc in relevant_docs])
+    input_text = f"follow the knowledge below: {context} question: {question} answer: "
+    
+    inputs = tokenizer(input_text, return_tensors="pt").to("mps")
+    outputs = model.generate(
+        inputs,
+        generation_config=GenerationConfig(
+            temperature=0.2,
+            max_new_tokens=200,
+            repetition_penalty=1.5
+        )
+    )
+    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("answer：")[-1].strip()
 
 # 步骤八：模型部署和使用
+
 model = AutoModelForCausalLM.from_pretrained("fine_tuned_gpt2")
 tokenizer = AutoTokenizer.from_pretrained("fine_tuned_gpt2")
 
 qa_pipeline = pipeline("text-generation", model=model, tokenizer=tokenizer)
 
-question = "软件的卸载步骤是什么？"
-input_text = f"问题：{question} 答案："
-answer = qa_pipeline(input_text, max_length=200, num_return_sequences=1)[0]['generated_text']
-print(answer.replace(input_text, ""))
-    
+
+print("模型加载完成！")
+# 测试模型
+# question = "What is LangChain?"
+# input_text = f"question：{question} answer："
+# answer = qa_pipeline(input_text, max_length=200, num_return_sequences=1)[0]['generated_text']
+# print(answer.replace(input_text, ""))
+
+question = "What is LangChain?"
+print("Question:", question)
+print("Answer:", generate_answer_with_rag(question))
